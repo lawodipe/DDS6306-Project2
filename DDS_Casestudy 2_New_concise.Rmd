@@ -1,0 +1,568 @@
+---
+title: "DDS_Casestudy 2_New"
+author: "John Olanipekun"
+date: "12/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(e1071)
+library(GGally)
+library(naniar)
+library(olsrr)
+library(MASS)
+library(caret)
+library(leaps)
+library(reshape2)
+library(class)
+library(caret)
+library(e1071)
+library(rsample)
+library(recipes)
+library(psych)
+```
+
+```{r}
+attrition_df <- read.csv("C:/Users/olani/OneDrive/Documents/Data Science/SMU-Data Science/Doing Data Science/MSDS_6306_DDS/Unit 14 and 15 Case Study 2/CaseStudy2-data.csv")
+
+class(attrition_df)
+str(attrition_df)
+gg_miss_var(attrition_df) #no missing data
+dim(attrition_df)
+
+
+```
+
+
+###Recode relevant categorical variables and convert them to factors
+```{r}
+attrition_df_recode <- attrition_df %>%
+  mutate(Education = as.factor(if_else(Education == 1,"Below College", if_else(Education == 2, "College", if_else(Education == 3, "Bachelor", if_else(Education == 4, "Master","Doctor"))))),
+         EnvironmentSatisfaction = as.factor(if_else(EnvironmentSatisfaction == 1,"Low",if_else(EnvironmentSatisfaction == 2, "Medium", if_else(EnvironmentSatisfaction == 3, "High", "Very High")))),
+         JobInvolvement = as.factor(if_else(JobInvolvement == 1,"Low",if_else(JobInvolvement == 2, "Medium",if_else(JobInvolvement == 3, "High", "Very High")))),
+         JobSatisfaction = as.factor(if_else(JobSatisfaction == 1, "Low",if_else(JobSatisfaction == 2, "Medium",if_else(JobSatisfaction == 3, "High","Very High")))),
+         PerformanceRating = as.factor(if_else(PerformanceRating == 1, "Low",if_else(PerformanceRating == 2, "Good", if_else(PerformanceRating == 3, "Excellent", "Outstanding")))),
+         RelationshipSatisfaction = as.factor(if_else(RelationshipSatisfaction == 1, "Low",if_else(RelationshipSatisfaction == 2, "Medium", if_else(RelationshipSatisfaction == 3, "High", "Very High")))), 
+         WorkLifeBalance = as.factor(if_else(WorkLifeBalance == 1, "Bad",if_else(WorkLifeBalance == 2, "Good", if_else(WorkLifeBalance == 3, "Better", "Best")))),
+         JobLevel = as.factor(JobLevel),
+         MonthlyIncomeFact = as.factor(cut(MonthlyIncome, breaks = c(0,3000,6000,10000, 20000), labels = c("Low","Average", "High", "Very High"))),
+         JobRole = as.factor(JobRole),
+         Attrition_recode = as.factor(ifelse(grepl("No",Attrition, ignore.case=TRUE), 1, 0))
+         ) %>%
+  dplyr::select(-ID, -EmployeeCount, -EmployeeNumber, -Over18, -StandardHours, -EmployeeCount, -StockOptionLevel)
+
+
+
+
+```
+
+
+
+###Let us look at the structure and descriptive statistics of each feature
+
+```{r}
+str(attrition_df_recode)
+describe(attrition_df_recode)
+summary(attrition_df_recode)
+```
+
+
+###Let us look at contingency table for attrition.
+This will enable us to know the majority class and watch out for class imbalance which can compromise the significance of our model accuracy
+
+```{r}
+table(attrition_df_recode$Attrition) 
+```
+There is class imbalance No = 730 Yes = 140 but we will focus on other metrics like sensitivity and specificity
+
+
+###plot to see general trends in the data set and how these are related to attrition
+
+```{r}
+
+#JobRole, JobSatistfaction, Attrition
+attrition_df_recode %>% 
+ggplot(aes(x = JobSatisfaction, fill = Attrition)) + 
+geom_bar(position = position_dodge()) + 
+facet_wrap(vars(JobRole))
+
+
+```
+Visual examination of the above plot suggests that attrition is most common among Laboratory technicians and Sales representative and level of job satisfaction plays little to no role in the attrition. Relatively speaking, attrition is uncommon among upper management staff (Manager, Sales Executive and research director)
+
+
+```{r}
+#effect of job level, PercentSalaryHike and MonthlyIncome on Attrition (Y/N)
+
+#JobRole, JobLevel, Attrition
+attrition_df_recode %>% 
+mutate(MonthlyIncomeFact = cut(MonthlyIncome, breaks = c(0,3000,6000,10000, 20000), labels = c("Low","Average", "High", "Very High"))) %>% 
+ggplot(aes(x = JobLevel, fill = Attrition)) + 
+geom_bar(binwidth = 1) + 
+facet_wrap(vars(PercentSalaryHike))
+
+
+attrition_df_recode %>%
+  mutate(MonthlyIncomeFact = cut(MonthlyIncome, breaks = c(0,3000,6000,10000, 20000), labels = c("Low","Average", "High", "Very High"))) %>% 
+ggplot(aes(x=MonthlyIncomeFact, y=PercentSalaryHike)) + geom_point(shape=5)+ ggtitle("Effect of Job Level(1-5), PercentSalaryHike and MonthlyIncome on Attrition(Y/N)") + 
+facet_grid(Attrition ~ JobLevel)
+
+#Job levels 1 and 2 who are least paid also have the highest proportion of Attrition = Yes
+
+#checking the data distribution of MonthlyIncome to see if it satisfies normality assumption needed for linear models.
+
+par(mfrow = c(1, 2))
+p_s <-  hist(attrition_df_recode$MonthlyIncome, main = "Histogram of Monthly Income")
+p_s.l <- hist(log(attrition_df_recode$MonthlyIncome), main = "Histogram of Monthly Income(log)")
+par(mfrow = c(1, 1))
+
+#The distribution approaches normality when transformed
+
+
+```
+
+
+###Other multivariate plots
+```{r}
+
+#Monthly income, Jobrole, Attrition
+
+attrition_df_recode %>% 
+ggplot(aes(x = MonthlyIncomeFact, fill = Attrition)) + 
+geom_bar(position = position_dodge()) + 
+facet_wrap(vars(JobRole))
+
+
+#JobRole, JobSatistfaction, Attrition
+attrition_df_recode %>% 
+ggplot(aes(x = JobSatisfaction, fill = Attrition)) + 
+geom_bar(position = position_dodge()) + 
+facet_wrap(vars(JobRole))
+
+#For the above. For sales reps, distinctively, whether they are high or low Job satisfaction, they still quit. Research Scientists are less likely to quit based on JobSat. So also Healthcare reps. JobSat is not conclusively responsible for Attrition among Lab techs. Upper management almost never quit.
+
+
+
+#JobRole, YearsinCurrentRole, Attrition
+attrition_df_recode %>% 
+ggplot(aes(x = YearsInCurrentRole, fill = Attrition)) + 
+geom_histogram(binwidth = 0.8) + 
+facet_wrap(vars(JobRole))
+
+#Except for upper management, people that spend less than 5 years in a role tend to have high attrition=yes rate.
+
+
+```
+
+
+
+###more EDA
+##Correlation matrix
+To view multi-colinearity among the variables and see which of the variables have strong relationship with Attrition
+```{r}
+#plotting correlation matrix. Note that r documentation stated that Pearson method is not good for ordinal variables, So I used Spearman method instead.
+
+attrition_df_recode %>% 
+  dplyr::select(Age,Attrition_recode,Department,DistanceFromHome,Education,Gender,HourlyRate,JobInvolvement, MaritalStatus, NumCompaniesWorked,PercentSalaryHike, PerformanceRating,RelationshipSatisfaction, TotalWorkingYears,YearsAtCompany, YearsInCurrentRole, YearsSinceLastPromotion,YearsWithCurrManager, JobRole) %>%
+  ggcorr(palette = "RdBu", label = TRUE, hjust= 0.9, layout.exp = 1.2, name = "Spearman correlation coeff. (ρ)")
+
+attrition_df_recode %>% distinct(Gender)
+
+
+
+
+#the cor matrix suggests attrition correlates with Monthly income, JobRole, Years wih current mgr, Yearsincurrent role, Years at company,Totalworkingyears, Job Involvement. But Years at company and Totalworking years are likely confounded by Age.
+
+```
+
+###Encoding categorical variables
+The categorical variables are in levels and each level has a different proportion of contribution it offers to the response.To treat each level as a predictor entity we will re-code the levels. I will be using One hot encoding for encoding categorical variables wherein, each category of a categorical variable is converted into a new binary column (1/0).
+
+```{r}
+dmy <- dummyVars(~., data = attrition_df_recode[,c(-2,-32)])
+trsf <- data.frame(predict(dmy, newdata = attrition_df_recode[, c(-2,-32)]))
+```
+
+
+###Removing Skewness
+Skewness in variables is undesirable for predictive modeling. Many of our varibales are skewed as seeing in the Monthly income histogram. There are many techniques for transforming a dataset but I choose log transform combined with centering and scaling as I do not know how the Box Cox works yet.
+
+
+
+```{r}
+trsf <- trsf %>%
+  mutate(Age = log(Age + 1)
+         ,DailyRate = log(DailyRate + 1)
+         ,DistanceFromHome = log(DistanceFromHome + 1)
+         ,HourlyRate = log(HourlyRate + 1)
+         ,MonthlyIncome = log(MonthlyIncome + 1)
+         ,MonthlyRate = log(MonthlyRate + 1)
+         ,NumCompaniesWorked = log(NumCompaniesWorked + 1)
+         ,PercentSalaryHike = log(PercentSalaryHike + 1)
+         ,TotalWorkingYears = log(TotalWorkingYears + 1)
+         ,TrainingTimesLastYear = log(TrainingTimesLastYear + 1)
+         ,YearsAtCompany = log(YearsAtCompany +1)
+         ,YearsInCurrentRole = log(YearsInCurrentRole + 1)
+         ,YearsSinceLastPromotion = log(YearsSinceLastPromotion + 1)
+         ,YearsWithCurrManager = log(YearsWithCurrManager + 1)
+         )
+```
+
+```{r}
+prep_num = preProcess(trsf, method=c("center", "scale"))
+final_dataset = predict(prep_num, trsf)
+```
+
+
+
+###Removing co related independent variables
+It is not desirable to have correlated features if we are using linear regressions. We will first find out variables which have a corelation of 0.85 or higher
+
+
+```{r}
+set.seed(200)
+cor_mat<- cor(final_dataset)
+high_corr <- findCorrelation(cor_mat, cutoff = 0.85)
+names(trsf)[high_corr]
+```
+
+
+Removing the highly correlated variables
+
+```{r}
+final_dataset <- cbind(trsf, attrition_df_recode[2])
+final_dataset <- cbind(final_dataset, attrition_df[1])
+final_dataset <- final_dataset %>%
+  mutate(Attrition = as.factor(if_else(Attrition == "Yes",1,0))) %>%
+  dplyr::select(-DepartmentSales,-JobRole.Human.Resources,-PerformanceRating.Outstanding,-GenderMale,-OverTimeYes)
+str(final_dataset$Attrition)#Attrition is now in factor with 2 levels
+```
+
+
+
+###Predictive modelling
+```{r}
+#Splitting the dataset
+set.seed(200)
+
+Train <- createDataPartition(final_dataset$Attrition, p=0.7, list=FALSE)
+training <- final_dataset[ Train, ]
+testing <- final_dataset[ -Train, ]
+```
+
+
+Let’s check if the proportion of churn data is maintained in the sets we created.
+```{r}
+prop.table(table(final_dataset$Attrition))
+```
+
+```{r}
+prop.table(table(training$Attrition))
+```
+
+Yes so the proportion seems to be maintained, but some class imbalanced still persists.
+
+Two models will be designed to predict the attrition of an employee. These models are :
+Linear regression, k-NN, Naive Bayes
+
+
+Logistic regression
+
+```{r}
+trsf1 <-  attrition_df_recode%>%
+  mutate(Age = log(Age + 1)
+         ,DailyRate = log(DailyRate + 1)
+         ,DistanceFromHome = log(DistanceFromHome + 1)
+         ,HourlyRate = log(HourlyRate + 1)
+         ,MonthlyIncome = log(MonthlyIncome + 1)
+         ,MonthlyRate = log(MonthlyRate + 1)
+         ,NumCompaniesWorked = log(NumCompaniesWorked + 1)
+         ,PercentSalaryHike = log(PercentSalaryHike + 1)
+         ,TotalWorkingYears = log(TotalWorkingYears + 1)
+         ,TrainingTimesLastYear = log(TrainingTimesLastYear + 1)
+         ,YearsAtCompany = log(YearsAtCompany +1)
+         ,YearsInCurrentRole = log(YearsInCurrentRole + 1)
+         ,YearsSinceLastPromotion = log(YearsSinceLastPromotion + 1)
+         ,YearsWithCurrManager = log(YearsWithCurrManager + 1)
+         ,Attrition = as.factor(Attrition)) %>%
+  dplyr::select(-Attrition_recode)
+```
+
+
+###Logistic Regression
+##Model Training
+
+```{r}
+describe(trsf1)
+set.seed(200)
+
+Train <- createDataPartition(trsf1$Attrition, p=0.7, list=FALSE)
+training <- trsf1[ Train, ]
+testing <- trsf1[ -Train, ]
+
+training1 <- trsf1
+#BIC and AIC for this model
+
+attrition_mod1 = glm(Attrition~., data = training, family = "binomial")
+
+model_summary <- summary(attrition_mod1)
+
+step<- stepAIC(attrition_mod1,direction = "backward",trace=FALSE)
+summary(step)
+step$coefficients
+step$anova
+
+
+#this resulted in the below model
+
+step_select <- glm(Attrition ~ Age + BusinessTravel + DistanceFromHome + EnvironmentSatisfaction + 
+    HourlyRate + JobInvolvement + JobLevel + JobRole + JobSatisfaction + 
+    MaritalStatus + NumCompaniesWorked + OverTime + PerformanceRating + 
+    RelationshipSatisfaction + TotalWorkingYears + TrainingTimesLastYear + 
+    WorkLifeBalance + YearsInCurrentRole + YearsSinceLastPromotion + 
+    YearsWithCurrManager, data = training, family = "binomial")
+
+step_select_summary <- summary(step_select)
+step_select_summary
+
+#to calculate R correlation:
+#1 - (Residual Deviance/Null Deviance)
+
+ 
+
+step_select.r <- with(summary(step_select), 1 - deviance/null.deviance)  #r =0.411, r^2 = 0.16
+
+
+testing1 <- testing %>%
+  mutate(Attrition = as.character(Attrition))
+testing$Attrition <- droplevels(testing$Attrition)
+pred_lr <- predict(step_select, newdata=testing1)
+#caret::confusionMatrix(pred_lr, testing1$Attrition) #Error: `data` and `reference` should be factors with the same levels.
+
+
+
+#Residual plots and Cook's D plots to check for assumptions.
+
+par(mfrow = c(2, 1))
+p_r <-  plot(step_select$fitted.values,step_select$residuals, main = "Residual Plot for Attrition classification")
+p_c <- plot(cooks.distance(step_select), main = "Cooks' D for Attrition classification")
+par(mfrow = c(1, 1))
+
+#There are points that are far from the regression line and there are no random clouds of residuals around -2 to +2.
+#This shows that the linear model is not a good model to classify the response.
+#on the positive side the Cooks'D plot did not show any strongly high leverage point,so there are no extreme outlier in the plotted data.
+
+
+library(qpcR)
+qpcR::RMSE(attrition_mod1) #calculated from the residuals
+
+
+```
+
+#Effect: 
+The greater the parameter estimate(step_select output) the greater its effect on attrition=Yes when other predictors are kept constant.
+
+These top variables are:JobInvolvementLow, BusinessTravelTravel,OverTimeYes,MaritalStatusSingle  
+
+
+###Below is KNN classification model
+```{r}
+
+set.seed(400)
+control <- trainControl(method="repeatedcv",repeats = 3) #,classProbs=TRUE,summaryFunction = twoClassSummary)
+knnFit <- train(Attrition~., data = training, method = "knn", trControl = control, preProcess = c("center","scale"), tuneLength = 20)
+#The final value used for the model was k = 7.
+pred_rf <- predict(knnFit, newdata=testing)
+confusionMatrix(table(pred_rf,testing$Attrition))
+
+
+  
+```
+#The above implementation gave me an accuracy of 0.85 and a Sensitivity of 0.995
+
+
+
+###Classifying the the new unknown data set that doesnt contain attrition label.
+
+```{r}
+no.attrition_df <- read.csv("C:/Users/olani/OneDrive/Documents/Data Science/SMU-Data Science/Doing Data Science/MSDS_6306_DDS/Unit 14 and 15 Case Study 2/CaseStudy2CompSet No Attrition.csv")
+
+class(no.attrition_df)
+str(attrition_df)
+names(no.attrition_df)
+gg_miss_var(no.attrition_df) #no missing data
+dim(no.attrition_df)
+
+```
+
+###I  ll do every processing I did to the training data to this unknown data set as well
+```{r}
+no.attrition_df_recode <- no.attrition_df %>%
+  mutate(Education = as.factor(if_else(Education == 1,"Below College", if_else(Education == 2, "College", if_else(Education == 3, "Bachelor", if_else(Education == 4, "Master","Doctor"))))),
+         EnvironmentSatisfaction = as.factor(if_else(EnvironmentSatisfaction == 1,"Low",if_else(EnvironmentSatisfaction == 2, "Medium", if_else(EnvironmentSatisfaction == 3, "High", "Very High")))),
+         JobInvolvement = as.factor(if_else(JobInvolvement == 1,"Low",if_else(JobInvolvement == 2, "Medium",if_else(JobInvolvement == 3, "High", "Very High")))),
+         JobSatisfaction = as.factor(if_else(JobSatisfaction == 1, "Low",if_else(JobSatisfaction == 2, "Medium",if_else(JobSatisfaction == 3, "High","Very High")))),
+         PerformanceRating = as.factor(if_else(PerformanceRating == 1, "Low",if_else(PerformanceRating == 2, "Good", if_else(PerformanceRating == 3, "Excellent", "Outstanding")))),
+         RelationshipSatisfaction = as.factor(if_else(RelationshipSatisfaction == 1, "Low",if_else(RelationshipSatisfaction == 2, "Medium", if_else(RelationshipSatisfaction == 3, "High", "Very High")))), 
+         WorkLifeBalance = as.factor(if_else(WorkLifeBalance == 1, "Bad",if_else(WorkLifeBalance == 2, "Good", if_else(WorkLifeBalance == 3, "Better", "Best")))),
+         JobLevel = as.factor(JobLevel),
+         MonthlyIncomeFact = as.factor(cut(MonthlyIncome, breaks = c(0,3000,6000,10000, 20000), labels = c("Low","Average", "High", "Very High"))),
+         JobRole = as.factor(JobRole)) %>%
+  dplyr::select(-EmployeeCount, -EmployeeNumber, -Over18, -StandardHours, -EmployeeCount, -StockOptionLevel)
+
+#check if those features are now in levels
+str(no.attrition_df_recode)
+```
+
+
+
+
+```{r}
+#one hot encoding for all except continuous varibales and the unique ID column.
+dmy <- dummyVars(~., data = no.attrition_df_recode[-1])
+trsf.new <- data.frame(predict(dmy, newdata = no.attrition_df_recode[-1]))
+
+#many of the predictors are skewed so we transform the data set to minimize the skewness
+trsf.new <- trsf.new %>%
+  mutate(Age = log(Age + 1)
+         ,DailyRate = log(DailyRate + 1)
+         ,DistanceFromHome = log(DistanceFromHome + 1)
+         ,HourlyRate = log(HourlyRate + 1)
+         ,MonthlyIncome = log(MonthlyIncome + 1)
+         ,MonthlyRate = log(MonthlyRate + 1)
+         ,NumCompaniesWorked = log(NumCompaniesWorked + 1)
+         ,PercentSalaryHike = log(PercentSalaryHike + 1)
+         ,TotalWorkingYears = log(TotalWorkingYears + 1)
+         ,TrainingTimesLastYear = log(TrainingTimesLastYear + 1)
+         ,YearsAtCompany = log(YearsAtCompany +1)
+         ,YearsInCurrentRole = log(YearsInCurrentRole + 1)
+         ,YearsSinceLastPromotion = log(YearsSinceLastPromotion + 1)
+         ,YearsWithCurrManager = log(YearsWithCurrManager + 1)
+         )
+#standardize dataset
+prep_num = preProcess(trsf.new, method=c("center", "scale"))
+final_dataset.new = predict(prep_num, trsf.new)
+final_dataset.new = cbind(trsf.new, no.attrition_df_recode[1]) #Unknown is ready for prediction but we need to tag the observations with the unique ID
+
+set.seed(200)
+pred_knn.new <- predict(knnFit, newdata=final_dataset.new, type ="raw")
+
+#I cannot build a confusion MAtrix because I don't have an expected label for the dataset.
+#confusionMatrix(table(pred_knn.new,as.factor(training$Attrition)))
+summary(pred_knn.new)
+
+hist(trsf.new$MonthlyIncome)
+hist(final_dataset.new$MonthlyIncome)
+
+prop.table(table(no.attrition_df.pred$pred_Attrition))
+str(no.attrition_df.pred)
+head(no.attrition_df.pred)
+
+no.attrition_df_recode%>%filter (ID == 1171) %>% dplyr::select(MonthlyRate)
+
+```
+
+
+#combine the predicted attrition data with the unknown dataset and add unique ID
+```{r}
+
+
+no.attrition_df.pred <- cbind(final_dataset.new, pred_Attrition=pred_knn.new)
+no.attrition_df.pred <- no.attrition_df.pred %>%
+  mutate(pred_Attrition = as.factor(if_else(pred_Attrition == 0,"No", "Yes")))
+no.attrition_df.pred1 <- no.attrition_df.pred %>% dplyr::select(ID, pred_Attrition)
+no.attrition_df.pred_new <- left_join(no.attrition_df_recode, no.attrition_df.pred1, by = "ID")
+str(no.attrition_df.pred_new)
+
+#Write the result to a csv file and move it to github
+write.csv(no.attrition_df.pred_new, 'C:\\Users\\olani\\OneDrive\\Documents\\Data Science\\SMU-Data Science\\Doing Data Science\\MSDS_6306_DDS\\Unit 14 and 15 Case Study 2\\predicted attrition.csv')
+
+```
+
+
+
+###Result evaluation
+
+Employee's department and other factors should agree with the top factors selected by linear the model and trend in our training data.
+This is incorrect.
+
+```{r}
+Attrition.Yes <- no.attrition_df.pred_new %>%
+  filter(pred_Attrition == "Yes")
+
+head(Attrition.Yes, n=20)
+```
+
+###Examine the employees predicted to leave the company.
+Firstly,K-NN predicted result reveals that most of the employees predicted to leave the company work as Lab Tech or sales rep. They rarely travel on business and have low monthly income. This category of employees also have either low or very high total working years suggesting early career with high mobility and late career departing due to retirement. Some of these factors are not included in the top factors identified by the linear model. We should also note that the linear model was only able to explain about 16% (r = 0.411) of attrition.
+
+
+
+
+###Predicting salary from another "unknown dataset"
+###This appears to be a regression problem since we are not anticipating a categorical response.
+To minimize redundanct, I ll remove variables that are perceived to be directly associated with salary: HourlyRate, MonthlyRate, Overtime, PercentSlaryHike, MonthlyIncomeFact.
+
+```{r}
+#Training the data on salary.
+describe(training)
+income_mod1 = glm(MonthlyIncome~., data = training[,c(-4, -11,-18,-21,-20,-31)])
+
+model_summary <- summary(income_mod1)
+
+step<- stepAIC(income_mod1,direction = "backward",trace=FALSE)
+summary(step)
+step$coefficients
+step$anova
+
+#The final model selected based on the above.
+
+Final.model.sal <- glm(MonthlyIncome ~ BusinessTravel + Education + Gender + JobInvolvement + 
+    JobLevel + JobRole + TotalWorkingYears, data = training[,c(-4, -11,-18,-21,-20,-31)])
+
+step_select.r1 <- with(summary(Final.model.sal), 1 - deviance/null.deviance)  #r =0.90, r^2 = 0.81
+
+pred_lr.sal <- predict(Final.model.sal, newdata=testing)#, type = "response")
+summary(pred_lr.sal)
+
+
+#Adding the predicted salary to the test data and also back converting the transformed salary response 
+salary.pred_df <- cbind(testing, pred_Monthly_income.log=pred_lr.sal, pred_monthlyincome = (exp(pred_lr.sal)-1))
+str(salary.pred_df)
+
+#Write the result to a csv file and move it to github
+write.csv(salary.pred_df, 'C:\\Users\\olani\\OneDrive\\Documents\\Data Science\\SMU-Data Science\\Doing Data Science\\MSDS_6306_DDS\\Unit 14 and 15 Case Study 2\\predicted monthly income.csv')
+
+
+
+
+#Residual plots and Cook's D plots to check for assumptions.
+
+par(mfrow = c(2, 1))
+p_r1 <-  plot(income_mod1$fitted.values,step_select$residuals, main = "Residual Plot for salary prediction")
+p_c1 <- plot(cooks.distance(income_mod1), main = "Cooks' D for Salary prediction")
+par(mfrow = c(1, 1))
+
+#There are points that are far from the regression line and there are no random clouds of residuals around -2 to +2.
+#This shows that the linear model is not a good model to classify the response.
+#on the positive side the Cooks'D plot did not show any strongly high leverage point,so there are no extreme outlier in the plotted data.
+
+
+#calculating the RMSE
+library(qpcR)
+qpcR::RMSE(income_mod1)
+
+
+```
+
+
